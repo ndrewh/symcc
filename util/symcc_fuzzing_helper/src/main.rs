@@ -50,6 +50,10 @@ struct CLI {
     #[clap(short = 'v')]
     verbose: bool,
 
+    /// Fuzzbench (symcc_aflplusplus)
+    #[clap(short = 'f')]
+    fuzzbench: bool,
+
     /// Program under test
     command: Vec<String>,
 }
@@ -298,7 +302,7 @@ fn main() -> Result<()> {
 
     let symcc = SymCC::new(symcc_dir.clone(), &options.command);
     log::debug!("SymCC configuration: {:?}", &symcc);
-    let afl_config = AflConfig::load(options.output_dir.join(&options.fuzzer_name))?;
+    let afl_config = AflConfig::load(options.output_dir.join(&options.fuzzer_name), options.fuzzbench)?;
     log::debug!("AFL configuration: {:?}", &afl_config);
     let mut state = State::initialize(symcc_dir)?;
 

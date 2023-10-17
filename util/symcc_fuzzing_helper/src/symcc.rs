@@ -249,7 +249,7 @@ pub enum AflShowmapResult {
 
 impl AflConfig {
     /// Read the AFL configuration from a fuzzer instance's output directory.
-    pub fn load(fuzzer_output: impl AsRef<Path>) -> Result<Self> {
+    pub fn load(fuzzer_output: impl AsRef<Path>, ignore_cmdline: bool) -> Result<Self> {
         let afl_stats_file_path = fuzzer_output.as_ref().join("fuzzer_stats");
         let mut afl_stats_file = File::open(&afl_stats_file_path).with_context(|| {
             format!(
@@ -276,11 +276,17 @@ impl AflConfig {
             .trim()
             .split_whitespace()
             .collect();
-        let afl_target_command: Vec<_> = afl_command
+        let mut afl_target_command: Vec<_> = afl_command
             .iter()
             .skip_while(|s| **s != "--")
             .map(OsString::from)
             .collect();
+
+        if ignore_cmdline {
+            afl_target_command.truncate(2);
+            afl_target_command.push(OsString::from("@@"));
+        }
+
         let afl_binary_dir = Path::new(
             afl_command
                 .get(0)

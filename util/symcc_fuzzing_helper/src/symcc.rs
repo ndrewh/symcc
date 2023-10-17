@@ -61,13 +61,13 @@ impl AflMap {
             )
         })?;
         ensure!(
-            data.len() == 65536,
+            data.len() <= 65536,
             "The file to load the coverage map from has the wrong size ({})",
             data.len()
         );
 
         let mut result = AflMap::new();
-        result.data.copy_from_slice(&data);
+        result.data[..data.len()].copy_from_slice(&data);
         Ok(result)
     }
 

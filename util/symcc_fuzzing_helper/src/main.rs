@@ -241,6 +241,7 @@ impl State {
             num_total += 1;
             if res == TestcaseResult::New {
                 log::debug!("Test case is interesting");
+                log::warn!("Test case {:?} is interesting", new_test);
                 num_interesting += 1;
             }
         }

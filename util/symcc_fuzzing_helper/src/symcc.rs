@@ -557,7 +557,7 @@ impl SymCC {
             log::warn!("Backend reported inaccurate solver time!");
         }
 
-        let mut log_file = File::create(format!("/results/log_{}.txt", input.as_ref().file_name().unwrap().to_str().unwrap() )).with_context(|| format!("Failed to open log file"))?;
+        let mut log_file = File::create(format!("/out/results/log_{}.txt", input.as_ref().file_name().unwrap().to_str().unwrap() )).with_context(|| format!("Failed to open log file"))?;
         log_file.write_all(&result.stderr)?;
 
         Ok(SymCCResult {

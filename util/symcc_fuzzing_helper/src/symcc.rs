@@ -18,7 +18,7 @@ use std::cmp;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -433,7 +433,7 @@ impl SymCC {
 
     /// Try to extract the solver time from the logs produced by the Qsym
     /// backend.
-    fn parse_solver_time(output: Vec<u8>) -> Option<Duration> {
+    fn parse_solver_time(output: &Vec<u8>) -> Option<Duration> {
         let re = Regex::new(r#""solving_time": (\d+)"#).unwrap();
         output
             // split into lines
@@ -552,10 +552,13 @@ impl SymCC {
             .map(|entry| entry.path())
             .collect();
 
-        let solver_time = SymCC::parse_solver_time(result.stderr);
+        let solver_time = SymCC::parse_solver_time(&result.stderr);
         if solver_time.is_some() && solver_time.unwrap() > total_time {
             log::warn!("Backend reported inaccurate solver time!");
         }
+
+        let mut log_file = File::create(format!("/results/log_{}.txt", input.as_ref().file_name().unwrap().to_str().unwrap() )).with_context(|| format!("Failed to open log file"))?;
+        log_file.write_all(&result.stderr)?;
 
         Ok(SymCCResult {
             test_cases: new_tests,

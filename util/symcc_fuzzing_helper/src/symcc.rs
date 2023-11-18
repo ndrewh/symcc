@@ -337,6 +337,7 @@ impl AflConfig {
 
         if self.use_qemu_mode {
             afl_show_map.arg("-Q");
+            afl_show_map.env("AFL_MAP_SIZE", "65536");
         }
 
         afl_show_map

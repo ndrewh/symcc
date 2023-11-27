@@ -196,7 +196,7 @@ pub fn copy_testcase(
     if let Some(orig_id) = orig_name.get(3..9) {
         let new_name = format!("id:{:06},src:{}", target_dir.current_id, &orig_id);
         let target = target_dir.path.join(new_name);
-        log::debug!("Creating test case {}", target.display());
+        log::warn!("Creating test case {}", target.display());
         fs::copy(testcase.as_ref(), target).with_context(|| {
             format!(
                 "Failed to copy the test case {} to {}",
@@ -249,7 +249,7 @@ pub enum AflShowmapResult {
 
 impl AflConfig {
     /// Read the AFL configuration from a fuzzer instance's output directory.
-    pub fn load(fuzzer_output: impl AsRef<Path>, ignore_cmdline: bool) -> Result<Self> {
+    pub fn load(fuzzer_output: impl AsRef<Path>, override_cmdline: Option<&Vec<String>>) -> Result<Self> {
         let afl_stats_file_path = fuzzer_output.as_ref().join("fuzzer_stats");
         let mut afl_stats_file = File::open(&afl_stats_file_path).with_context(|| {
             format!(
@@ -282,9 +282,11 @@ impl AflConfig {
             .map(OsString::from)
             .collect();
 
-        if ignore_cmdline {
-            afl_target_command.truncate(2);
-            afl_target_command.push(OsString::from("@@"));
+        if let Some(cmdline) = override_cmdline {
+            afl_target_command = cmdline.iter().map(|x| OsString::from(x)).collect();
+            if cmdline[0].contains("symqemu") {
+                afl_target_command.remove(0);
+            }
         }
 
         let afl_binary_dir = Path::new(

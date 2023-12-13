@@ -17,13 +17,17 @@ use regex::Regex;
 use std::cmp;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File};
+use tokio::fs::{self, File};
 use std::io::{self, Read, Write};
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Stdio};
+use tokio::process::{Command};
 use std::str;
 use std::time::{Duration, Instant};
+use tokio_stream::wrappers::ReadDirStream;
+use tokio_stream::StreamExt;
 
 const TIMEOUT: u32 = 90;
 
@@ -52,8 +56,8 @@ impl AflMap {
     }
 
     /// Load a map from disk.
-    pub fn load(path: impl AsRef<Path>) -> Result<AflMap> {
-        let data = fs::read(&path).with_context(|| {
+    pub async fn load(path: impl AsRef<Path>) -> Result<AflMap> {
+        let data = fs::read(&path).await.with_context(|| {
             format!(
                 "Failed to read the AFL bitmap that \
                  afl-showmap should have generated at {}",
@@ -111,8 +115,8 @@ impl TestcaseScore {
     /// Score a test case.
     ///
     /// If anything goes wrong, return the minimum score.
-    fn new(t: impl AsRef<Path>) -> Self {
-        let size = match fs::metadata(&t) {
+    async fn new(t: impl AsRef<Path>) -> Self {
+        let size = match fs::metadata(&t).await {
             Err(e) => {
                 // Has the file disappeared?
                 log::warn!(
@@ -163,13 +167,13 @@ impl TestcaseDir {
     /// Create a new test-case directory in the specified location.
     ///
     /// The parent directory must exist.
-    pub fn new(path: impl AsRef<Path>) -> Result<TestcaseDir> {
+    pub async fn new(path: impl AsRef<Path>) -> Result<TestcaseDir> {
         let dir = TestcaseDir {
             path: path.as_ref().into(),
             current_id: 0,
         };
 
-        fs::create_dir(&dir.path)
+        fs::create_dir(&dir.path).await
             .with_context(|| format!("Failed to create directory {}", dir.path.display()))?;
         Ok(dir)
     }
@@ -177,7 +181,7 @@ impl TestcaseDir {
 
 /// Copy a test case to a directory, using the parent test case's name to derive
 /// the new name.
-pub fn copy_testcase(
+pub async fn copy_testcase(
     testcase: impl AsRef<Path>,
     target_dir: &mut TestcaseDir,
     parent: impl AsRef<Path>,
@@ -197,7 +201,7 @@ pub fn copy_testcase(
         let new_name = format!("id:{:06},src:{}", target_dir.current_id, &orig_id);
         let target = target_dir.path.join(new_name);
         log::warn!("Creating test case {}", target.display());
-        fs::copy(testcase.as_ref(), target).with_context(|| {
+        fs::copy(testcase.as_ref(), target).await.with_context(|| {
             format!(
                 "Failed to copy the test case {} to {}",
                 testcase.as_ref().display(),
@@ -249,9 +253,9 @@ pub enum AflShowmapResult {
 
 impl AflConfig {
     /// Read the AFL configuration from a fuzzer instance's output directory.
-    pub fn load(fuzzer_output: impl AsRef<Path>, override_cmdline: Option<&Vec<String>>) -> Result<Self> {
+    pub async fn load(fuzzer_output: impl AsRef<Path>, override_cmdline: Option<&Vec<String>>) -> Result<Self> {
         let afl_stats_file_path = fuzzer_output.as_ref().join("fuzzer_stats");
-        let mut afl_stats_file = File::open(&afl_stats_file_path).with_context(|| {
+        let mut afl_stats_file = File::open(&afl_stats_file_path).await.with_context(|| {
             format!(
                 "Failed to open the fuzzer's stats at {}",
                 afl_stats_file_path.display()
@@ -259,7 +263,7 @@ impl AflConfig {
         })?;
         let mut afl_stats = String::new();
         afl_stats_file
-            .read_to_string(&mut afl_stats)
+            .read_to_string(&mut afl_stats).await
             .with_context(|| {
                 format!(
                     "Failed to read the fuzzer's stats at {}",
@@ -307,30 +311,36 @@ impl AflConfig {
     }
 
     /// Return the most promising unseen test case of this fuzzer.
-    pub fn best_new_testcase(&self, seen: &HashSet<PathBuf>) -> Result<Option<PathBuf>> {
-        let best = fs::read_dir(&self.queue)
+    pub async fn best_new_testcase(&self, seen: &HashSet<PathBuf>) -> Result<Option<PathBuf>> {
+        let mut best_score: Option<TestcaseScore> = None;
+        let mut best: Option<PathBuf> = None;
+        let mut stream = ReadDirStream::new(fs::read_dir(&self.queue).await
             .with_context(|| {
                 format!(
                     "Failed to open the fuzzer's queue at {}",
                     self.queue.display()
                 )
-            })?
-            .collect::<io::Result<Vec<_>>>()
-            .with_context(|| {
-                format!(
-                    "Failed to read the fuzzer's queue at {}",
-                    self.queue.display()
-                )
-            })?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file() && !seen.contains(path))
-            .max_by_key(|path| TestcaseScore::new(path));
-
+            })?);
+        while let Some(entry) = stream.next().await {
+            let Ok(entry) = entry else {
+                log::warn!("Failed to read the fuzzer's queue: {}", entry.unwrap_err());
+                continue;
+            };
+            let path = entry.path();
+            if path.is_file() && !seen.contains(&path) {
+                let score = TestcaseScore::new(&path).await;
+                match &best_score {
+                    Some(best_score) if score <= *best_score => continue,
+                    _ => (),
+                }
+                best_score = Some(score);
+                best = Some(path);
+            }
+        }
         Ok(best)
     }
 
-    pub fn run_showmap(
+    pub async fn run_showmap(
         &self,
         testcase_bitmap: impl AsRef<Path>,
         testcase: impl AsRef<Path>,
@@ -358,18 +368,20 @@ impl AflConfig {
         let mut afl_show_map_child = afl_show_map.spawn().context("Failed to run afl-showmap")?;
 
         if self.use_standard_input {
-            io::copy(
-                &mut File::open(&testcase)?,
+            tokio::io::copy(
+                &mut File::open(&testcase).await?,
                 afl_show_map_child
                     .stdin
                     .as_mut()
                     .expect("Failed to open the stardard input of afl-showmap"),
             )
+            .await
             .context("Failed to pipe the test input to afl-showmap")?;
         }
 
         let afl_show_map_status = afl_show_map_child
             .wait()
+            .await
             .context("Failed to wait for afl-showmap")?;
         log::debug!("afl-showmap returned {}", &afl_show_map_status);
         match afl_show_map_status
@@ -377,7 +389,7 @@ impl AflConfig {
             .expect("No exit code available for afl-showmap")
         {
             0 => {
-                let map = AflMap::load(&testcase_bitmap).with_context(|| {
+                let map = AflMap::load(&testcase_bitmap).await.with_context(|| {
                     format!(
                         "Failed to read the AFL bitmap that \
                          afl-showmap should have generated at {}",
@@ -462,12 +474,12 @@ impl SymCC {
     /// determine the time spent in the SMT solver and report it as part of the
     /// result. However, the mechanism that the backend uses to report solver
     /// time is somewhat brittle.
-    pub fn run(
+    pub async fn run(
         &self,
         input: impl AsRef<Path>,
         output_dir: impl AsRef<Path>,
     ) -> Result<SymCCResult> {
-        fs::copy(&input, &self.input_file).with_context(|| {
+        fs::copy(&input, &self.input_file).await.with_context(|| {
             format!(
                 "Failed to copy the test case {} to our workbench at {}",
                 input.as_ref().display(),
@@ -475,7 +487,7 @@ impl SymCC {
             )
         })?;
 
-        fs::create_dir(&output_dir).with_context(|| {
+        fs::create_dir(&output_dir).await.with_context(|| {
             format!(
                 "Failed to create the output directory {} for SymCC",
                 output_dir.as_ref().display()
@@ -504,8 +516,8 @@ impl SymCC {
         let mut child = analysis_command.spawn().context("Failed to run SymCC")?;
 
         if self.use_standard_input {
-            io::copy(
-                &mut File::open(&self.input_file).with_context(|| {
+            tokio::io::copy(
+                &mut File::open(&self.input_file).await.with_context(|| {
                     format!(
                         "Failed to read the test input at {}",
                         self.input_file.display()
@@ -516,11 +528,13 @@ impl SymCC {
                     .as_mut()
                     .expect("Failed to pipe to the child's standard input"),
             )
+            .await
             .context("Failed to pipe the test input to SymCC")?;
         }
 
         let result = child
             .wait_with_output()
+            .await
             .context("Failed to wait for SymCC")?;
         let total_time = start.elapsed();
         let killed = match result.status.code() {
@@ -537,20 +551,15 @@ impl SymCC {
             }
         };
 
-        let new_tests = fs::read_dir(&output_dir)
+        let new_tests: Vec<_> = ReadDirStream::new(fs::read_dir(&output_dir)
+            .await
             .with_context(|| {
                 format!(
                     "Failed to read the generated test cases at {}",
                     output_dir.as_ref().display()
                 )
-            })?
-            .collect::<io::Result<Vec<_>>>()
-            .with_context(|| {
-                format!(
-                    "Failed to read all test cases from {}",
-                    output_dir.as_ref().display()
-                )
-            })?
+            })?)
+            .collect::<io::Result<Vec<_>>>().await?
             .iter()
             .map(|entry| entry.path())
             .collect();
@@ -560,8 +569,8 @@ impl SymCC {
             log::warn!("Backend reported inaccurate solver time!");
         }
 
-        let mut log_file = File::create(format!("/out/results/log_{}.txt", input.as_ref().file_name().unwrap().to_str().unwrap() )).with_context(|| format!("Failed to open log file"))?;
-        log_file.write_all(&result.stderr)?;
+        let mut log_file = File::create(format!("/out/results/log_{}.txt", input.as_ref().file_name().unwrap().to_str().unwrap() )).await.with_context(|| format!("Failed to open log file"))?;
+        log_file.write_all(&result.stderr).await?;
 
         Ok(SymCCResult {
             test_cases: new_tests,

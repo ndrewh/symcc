@@ -25,6 +25,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use symcc::{AflConfig, AflMap, AflShowmapResult, SymCC, TestcaseDir};
 use tempfile::tempdir;
+use tokio::sync::{RwLock};
+use std::sync::{Arc};
+use tokio::task;
 
 const STATS_INTERVAL_SEC: u64 = 60;
 
@@ -192,16 +195,16 @@ impl State {
     ///
     /// This involves creating the output directory and all required
     /// subdirectories.
-    fn initialize(output_dir: impl AsRef<Path>) -> Result<Self> {
+    async fn initialize(output_dir: impl AsRef<Path>) -> Result<Self> {
         let symcc_dir = output_dir.as_ref();
 
         fs::create_dir(&symcc_dir).with_context(|| {
             format!("Failed to create SymCC's directory {}", symcc_dir.display())
         })?;
         let symcc_queue =
-            TestcaseDir::new(symcc_dir.join("queue")).context("Failed to create SymCC's queue")?;
-        let symcc_hangs = TestcaseDir::new(symcc_dir.join("hangs"))?;
-        let symcc_crashes = TestcaseDir::new(symcc_dir.join("crashes"))?;
+            TestcaseDir::new(symcc_dir.join("queue")).await.context("Failed to create SymCC's queue")?;
+        let symcc_hangs = TestcaseDir::new(symcc_dir.join("hangs")).await?;
+        let symcc_crashes = TestcaseDir::new(symcc_dir.join("crashes")).await?;
         let stats_file = File::create(symcc_dir.join("stats"))?;
 
         Ok(State {
@@ -218,13 +221,17 @@ impl State {
 
     /// Run a single input through SymCC and process the new test cases it
     /// generates.
-    fn test_input(
-        &mut self,
+    async fn test_input(
+        state: &RwLock<Self>,
         input: impl AsRef<Path>,
         symcc: &SymCC,
         afl_config: &AflConfig,
     ) -> Result<()> {
         log::info!("Running on input {}", input.as_ref().display());
+        {
+            let mut st = state.write().await;
+            st.processed_files.insert(input.as_ref().to_path_buf());
+        }
 
         let tmp_dir = tempdir()
             .context("Failed to create a temporary directory for this execution of SymCC")?;
@@ -234,41 +241,46 @@ impl State {
 
         let symcc_result = symcc
             .run(&input, tmp_dir.path().join("output"))
+            .await
             .context("Failed to run SymCC")?;
-        for new_test in symcc_result.test_cases.iter() {
-            let res = process_new_testcase(&new_test, &input, &tmp_dir, &afl_config, self)?;
+        
+        {
+            let mut st = state.write().await;
+            for new_test in symcc_result.test_cases.iter() {
+                let res = process_new_testcase(&new_test, &input, &tmp_dir, &afl_config, &mut st).await?;
 
-            num_total += 1;
-            if res == TestcaseResult::New {
-                log::debug!("Test case is interesting");
-                log::warn!("Test case {:?} is interesting", new_test);
-                num_interesting += 1;
+                num_total += 1;
+                if res == TestcaseResult::New {
+                    log::debug!("Test case is interesting");
+                    log::warn!("Test case {:?} is interesting", new_test);
+                    num_interesting += 1;
+                }
             }
-        }
 
-        log::info!(
-            "Generated {} test cases ({} new)",
-            num_total,
-            num_interesting
-        );
-
-        if symcc_result.killed {
             log::info!(
-                "The target process was killed (probably timeout or out of memory); \
-                 archiving to {}",
-                self.hangs.path.display()
+                "Generated {} test cases ({} new)",
+                num_total,
+                num_interesting
             );
-            symcc::copy_testcase(&input, &mut self.hangs, &input)
-                .context("Failed to archive the test case")?;
-        }
 
-        self.processed_files.insert(input.as_ref().to_path_buf());
-        self.stats.add_execution(&symcc_result);
+            if symcc_result.killed {
+                log::info!(
+                    "The target process was killed (probably timeout or out of memory); \
+                    archiving to {}",
+                    st.hangs.path.display()
+                );
+                symcc::copy_testcase(&input, &mut st.hangs, &input).await
+                    .context("Failed to archive the test case")?;
+            }
+
+            st.stats.add_execution(&symcc_result);
+        }
         Ok(())
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let options = CLI::parse();
     env_logger::builder()
         .filter_level(if options.verbose {
@@ -301,30 +313,60 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let symcc = SymCC::new(symcc_dir.clone(), &options.command);
+    let symcc = Arc::new(SymCC::new(symcc_dir.clone(), &options.command));
     log::debug!("SymCC configuration: {:?}", &symcc);
-    let afl_config = AflConfig::load(options.output_dir.join(&options.fuzzer_name), if options.fuzzbench { Some(&options.command) } else { None })?;
+    let afl_config = Arc::new(AflConfig::load(options.output_dir.join(&options.fuzzer_name), if options.fuzzbench { Some(&options.command) } else { None }).await?);
     log::debug!("AFL configuration: {:?}", &afl_config);
-    let mut state = State::initialize(symcc_dir)?;
+    let state = Arc::new(RwLock::new(State::initialize(symcc_dir).await?));
 
+    let nthreads: usize = 8;
+    let (s, r) = async_channel::bounded(1);
+    for _ in 0..nthreads {
+        let state = state.clone();
+        let r = r.clone();
+        let symcc_ref = symcc.clone();
+        let afl_config = afl_config.clone();
+        task::spawn(async move {
+            while let Ok(input) = r.recv().await {
+                match State::test_input(&state, input, &symcc_ref, &afl_config).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("Failed to process input: {}", e);
+                    }
+                }
+            }
+        });
+    }
     loop {
-        match afl_config
-            .best_new_testcase(&state.processed_files)
-            .context("Failed to check for new test cases")?
-        {
+        let testcase = {
+            let tmp = state.read().await;
+            afl_config
+                .best_new_testcase(&tmp.processed_files)
+                .await
+                .context("Failed to check for new test cases")?
+        };
+        match testcase {
             None => {
                 log::debug!("Waiting for new test cases...");
-                thread::sleep(Duration::from_secs(5));
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
-            Some(input) => state.test_input(&input, &symcc, &afl_config)?,
+            Some(input) => {
+                log::debug!("Found new test case {}", input.display());
+                s.send(input).await?;
+            }
+        };
+
+        {
+            let mut held_lock = state.write().await;
+            let state = &mut *held_lock;
+            if state.last_stats_output.elapsed().as_secs() > STATS_INTERVAL_SEC {
+                if let Err(e) = state.stats.log(&mut state.stats_file) {
+                    log::error!("Failed to log run-time statistics: {}", e);
+                }
+                state.last_stats_output = Instant::now();
+            }
         }
 
-        if state.last_stats_output.elapsed().as_secs() > STATS_INTERVAL_SEC {
-            if let Err(e) = state.stats.log(&mut state.stats_file) {
-                log::error!("Failed to log run-time statistics: {}", e);
-            }
-            state.last_stats_output = Instant::now();
-        }
     }
 }
 
@@ -339,7 +381,7 @@ enum TestcaseResult {
 
 /// Check if the given test case provides new coverage, crashes, or times out;
 /// copy it to the corresponding location.
-fn process_new_testcase(
+async fn process_new_testcase(
     testcase: impl AsRef<Path>,
     parent: impl AsRef<Path>,
     tmp_dir: impl AsRef<Path>,
@@ -351,6 +393,7 @@ fn process_new_testcase(
     let testcase_bitmap_path = tmp_dir.as_ref().join("testcase_bitmap");
     match afl_config
         .run_showmap(&testcase_bitmap_path, &testcase)
+        .await
         .with_context(|| {
             format!(
                 "Failed to check whether test case {} is interesting",
@@ -360,7 +403,7 @@ fn process_new_testcase(
         AflShowmapResult::Success(testcase_bitmap) => {
             let interesting = state.current_bitmap.merge(&testcase_bitmap);
             if interesting {
-                symcc::copy_testcase(&testcase, &mut state.queue, parent).with_context(|| {
+                symcc::copy_testcase(&testcase, &mut state.queue, parent).await.with_context(|| {
                     format!(
                         "Failed to enqueue the new test case {}",
                         testcase.as_ref().display()
@@ -384,8 +427,8 @@ fn process_new_testcase(
                 "Test case {} crashes afl-showmap; it is probably interesting",
                 testcase.as_ref().display()
             );
-            symcc::copy_testcase(&testcase, &mut state.crashes, &parent)?;
-            symcc::copy_testcase(&testcase, &mut state.queue, &parent).with_context(|| {
+            symcc::copy_testcase(&testcase, &mut state.crashes, &parent).await?;
+            symcc::copy_testcase(&testcase, &mut state.queue, &parent).await.with_context(|| {
                 format!(
                     "Failed to enqueue the new test case {}",
                     testcase.as_ref().display()

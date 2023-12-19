@@ -55,7 +55,7 @@ struct CLI {
 
     /// Fuzzbench (symcc_aflplusplus)
     #[clap(short = 'f')]
-    fuzzbench: bool,
+    showmap_uses_same_cmdline_as_sym: bool,
 
     /// Program under test
     command: Vec<String>,
@@ -311,7 +311,7 @@ async fn main() -> Result<()> {
 
     let symcc = Arc::new(SymCC::new(symcc_dir.clone(), &options.command));
     log::debug!("SymCC configuration: {:?}", &symcc);
-    let afl_config = Arc::new(AflConfig::load(options.output_dir.join(&options.fuzzer_name), if options.fuzzbench { Some(&options.command) } else { None }).await?);
+    let afl_config = Arc::new(AflConfig::load(options.output_dir.join(&options.fuzzer_name), if options.showmap_uses_same_cmdline_as_sym { Some(&options.command) } else { None }).await?);
     log::debug!("AFL configuration: {:?}", &afl_config);
     let state = Arc::new(RwLock::new(State::initialize(symcc_dir).await?));
 

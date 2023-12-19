@@ -228,10 +228,6 @@ impl State {
         afl_config: &AflConfig,
     ) -> Result<()> {
         log::info!("Running on input {}", input.as_ref().display());
-        {
-            let mut st = state.write().await;
-            st.processed_files.insert(input.as_ref().to_path_buf());
-        }
 
         let tmp_dir = tempdir()
             .context("Failed to create a temporary directory for this execution of SymCC")?;
@@ -339,11 +335,15 @@ async fn main() -> Result<()> {
     }
     loop {
         let testcase = {
-            let tmp = state.read().await;
-            afl_config
+            let mut tmp = state.write().await;
+            let testcase = afl_config
                 .best_new_testcase(&tmp.processed_files)
                 .await
-                .context("Failed to check for new test cases")?
+                .context("Failed to check for new test cases")?;
+            if let Some(ts) = &testcase {
+                tmp.processed_files.insert(ts.clone());
+            }
+            testcase
         };
         match testcase {
             None => {

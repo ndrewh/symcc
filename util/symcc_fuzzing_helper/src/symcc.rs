@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
 
-const TIMEOUT: u32 = 20;
+const TIMEOUT: u32 = 1000;
 
 /// Replace the first '@@' in the given command line with the input file.
 fn insert_input_file<S: AsRef<OsStr>, P: AsRef<Path>>(

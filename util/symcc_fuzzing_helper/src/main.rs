@@ -59,6 +59,10 @@ struct CLI {
 
     /// Program under test
     command: Vec<String>,
+
+    /// nthreads
+    #[clap(default_value_t = 1, long = "nthread")]
+    nthread: usize,
 }
 
 /// Execution statistics.
@@ -315,7 +319,7 @@ async fn main() -> Result<()> {
     log::debug!("AFL configuration: {:?}", &afl_config);
     let state = Arc::new(RwLock::new(State::initialize(symcc_dir).await?));
 
-    let nthreads: usize = 8;
+    let nthreads: usize = options.nthread;
     let (s, r) = async_channel::bounded(1);
     for _ in 0..nthreads {
         let state = state.clone();

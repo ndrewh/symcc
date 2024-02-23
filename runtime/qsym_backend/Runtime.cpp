@@ -406,6 +406,13 @@ void _sym_notify_call(uintptr_t site_id) {
 
 void _sym_notify_ret(uintptr_t site_id) {
   g_call_stack_manager.visitRet(site_id);
+  if (g_config.end_addr && site_id == g_config.end_addr) {
+    // dump the formula
+    std::cout << "final dump\n";
+    std::ofstream smt_out(g_config.outputDir + "/final_out.smt");
+    smt_out << g_solver->smt_string() << std::endl;
+    smt_out.close();
+  }
 }
 
 void _sym_notify_basic_block(uintptr_t site_id) {

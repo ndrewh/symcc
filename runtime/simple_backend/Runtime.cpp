@@ -23,6 +23,7 @@
 #include <iostream>
 #include <set>
 #include <vector>
+#include <fstream>
 
 #ifndef NDEBUG
 #include <chrono>
@@ -65,6 +66,9 @@ Z3_solver g_solver; // TODO make thread-local
 Z3_ast g_null_pointer, g_true, g_false;
 
 FILE *g_log = stderr;
+
+/// The global Z3 solver.
+std::vector<Z3_ast> g_assertions; // TODO make thread-local
 
 #ifndef NDEBUG
 [[maybe_unused]] void dump_known_regions() {
@@ -460,29 +464,33 @@ void _sym_push_path_constraint(Z3_ast constraint, int taken,
       Z3_simplify(g_context, Z3_mk_not(g_context, constraint));
   Z3_inc_ref(g_context, not_constraint);
 
-  Z3_solver_push(g_context, g_solver);
-  Z3_solver_assert(g_context, g_solver, taken ? not_constraint : constraint);
-  fprintf(g_log, "Trying to solve:\n%s\n",
-          Z3_solver_to_string(g_context, g_solver));
+  // Z3_solver_push(g_context, g_solver);
+  // Z3_solver_assert(g_context, g_solver, taken ? not_constraint : constraint);
+  // fprintf(g_log, "Trying to solve:\n%s\n",
+  //         Z3_solver_to_string(g_context, g_solver));
 
-  Z3_lbool feasible = Z3_solver_check(g_context, g_solver);
-  if (feasible == Z3_L_TRUE) {
-    Z3_model model = Z3_solver_get_model(g_context, g_solver);
-    Z3_model_inc_ref(g_context, model);
-    fprintf(g_log, "Found diverging input:\n%s\n",
-            Z3_model_to_string(g_context, model));
-    Z3_model_dec_ref(g_context, model);
-  } else {
-    fprintf(g_log, "Can't find a diverging input at this point\n");
-  }
-  fflush(g_log);
+  // Z3_lbool feasible = Z3_solver_check(g_context, g_solver);
+  // if (feasible == Z3_L_TRUE) {
+  //   Z3_model model = Z3_solver_get_model(g_context, g_solver);
+  //   Z3_model_inc_ref(g_context, model);
+  //   fprintf(g_log, "Found diverging input:\n%s\n",
+  //           Z3_model_to_string(g_context, model));
+  //   Z3_model_dec_ref(g_context, model);
+  // } else {
+  //   fprintf(g_log, "Can't find a diverging input at this point\n");
+  // }
+  // fflush(g_log);
 
-  Z3_solver_pop(g_context, g_solver, 1);
+  // Z3_solver_pop(g_context, g_solver, 1);
 
   /* Assert the actual path constraint */
   Z3_ast newConstraint = (taken ? constraint : not_constraint);
   Z3_inc_ref(g_context, newConstraint);
   Z3_solver_assert(g_context, g_solver, newConstraint);
+
+  Z3_inc_ref(g_context, newConstraint);
+  g_assertions.push_back(newConstraint);
+
   assert((Z3_solver_check(g_context, g_solver) == Z3_L_TRUE) &&
          "Asserting infeasible path constraint");
   Z3_dec_ref(g_context, constraint);
@@ -508,7 +516,35 @@ size_t _sym_bits_helper(SymExpr expr) {
 
 /* No call-stack tracing */
 void _sym_notify_call(uintptr_t) {}
-void _sym_notify_ret(uintptr_t) {}
+
+static std::string to_smt2(char const* status = "unknown") {
+    Z3_ast const* fmls = g_assertions.data();
+    Z3_ast fml = 0;
+    unsigned sz = g_assertions.size();
+    if (sz > 0) {
+        --sz;
+        fml = fmls[sz];
+    }
+    else {
+        fml = Z3_mk_true(g_context);
+    }
+    return std::string(Z3_benchmark_to_smtlib_string(
+                           g_context,
+                           "", "", status, "",
+                           sz,
+                           fmls,
+                           fml));
+}
+
+void _sym_notify_ret(uintptr_t site_id) {
+  if (g_config.end_addr && site_id == g_config.end_addr) {
+    // dump the formula
+    std::cout << "final dump\n";
+    std::ofstream smt_out(g_config.outputDir + "/final_out.smt");
+    smt_out << to_smt2() << std::endl;
+    smt_out.close();
+  }
+}
 void _sym_notify_basic_block(uintptr_t) {}
 
 /* Debugging */
@@ -517,6 +553,7 @@ const char *_sym_expr_to_string(SymExpr expr) {
 }
 
 bool _sym_feasible(SymExpr expr) {
+  fprintf(g_log, "_sym_feasible\n");
   expr = Z3_simplify(g_context, expr);
   Z3_inc_ref(g_context, expr);
 

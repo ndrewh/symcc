@@ -92,4 +92,21 @@ void loadConfig() {
       throw std::runtime_error(msg.str());
     }
   }
+
+  auto *end_addr = getenv("SYMCC_END_ADDR");
+  if (end_addr != nullptr) {
+    try {
+      g_config.end_addr =
+          std::strtoull(end_addr, NULL, 16);
+    } catch (std::invalid_argument &) {
+      std::stringstream msg;
+      msg << "Can't convert " << end_addr << " to an integer";
+      throw std::runtime_error(msg.str());
+    } catch (std::out_of_range &) {
+      std::stringstream msg;
+      msg << "The end addr must be between 0 and "
+          << std::numeric_limits<uintptr_t>::max();
+      throw std::runtime_error(msg.str());
+    }
+  }
 }

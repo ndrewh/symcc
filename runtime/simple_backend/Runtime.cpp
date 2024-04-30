@@ -447,17 +447,17 @@ void _sym_push_path_constraint(Z3_ast constraint, int taken,
      "true" or "false", there is no point in trying to solve the negation or *
      pushing the constraint to the solver... */
 
-  if (Z3_is_eq_ast(g_context, constraint, g_true)) {
-    assert(taken && "We have taken an impossible branch");
-    Z3_dec_ref(g_context, constraint);
-    return;
-  }
+  // if (Z3_is_eq_ast(g_context, constraint, g_true)) {
+  //   assert(taken && "We have taken an impossible branch");
+  //   Z3_dec_ref(g_context, constraint);
+  //   return;
+  // }
 
-  if (Z3_is_eq_ast(g_context, constraint, g_false)) {
-    assert(!taken && "We have taken an impossible branch");
-    Z3_dec_ref(g_context, constraint);
-    return;
-  }
+  // if (Z3_is_eq_ast(g_context, constraint, g_false)) {
+  //   assert(!taken && "We have taken an impossible branch");
+  //   Z3_dec_ref(g_context, constraint);
+  //   return;
+  // }
 
   /* Generate a solution for the alternative */
   Z3_ast not_constraint =
@@ -491,8 +491,8 @@ void _sym_push_path_constraint(Z3_ast constraint, int taken,
   Z3_inc_ref(g_context, newConstraint);
   g_assertions.push_back(newConstraint);
 
-  assert((Z3_solver_check(g_context, g_solver) == Z3_L_TRUE) &&
-         "Asserting infeasible path constraint");
+  // assert((Z3_solver_check(g_context, g_solver) == Z3_L_TRUE) &&
+  //        "Asserting infeasible path constraint");
   Z3_dec_ref(g_context, constraint);
   Z3_dec_ref(g_context, not_constraint);
 }

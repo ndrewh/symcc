@@ -107,17 +107,14 @@ void Symbolizer::shortCircuitExpressionUses() {
     auto *slowPath = SplitBlock(head, symbolicComputation.firstInstruction);
     auto *tail = SplitBlock(slowPath,
                             symbolicComputation.lastInstruction->getNextNode());
+
+    allConcrete = IRB.getFalse();
     ReplaceInstWithInst(head->getTerminator(),
                         BranchInst::Create(tail, slowPath, allConcrete));
 
     // In the slow case, we need to check each input expression for null
     // (i.e., the input is concrete) and create an expression from the
     // concrete value if necessary.
-    auto numUnknownConcreteness = std::count_if(
-        symbolicComputation.inputs.begin(), symbolicComputation.inputs.end(),
-        [&](const Input &input) {
-          return (input.getSymbolicOperand() != nullExpression);
-        });
     for (unsigned argIndex = 0; argIndex < symbolicComputation.inputs.size();
          argIndex++) {
       auto &argument = symbolicComputation.inputs[argIndex];
@@ -130,9 +127,7 @@ void Symbolizer::shortCircuitExpressionUses() {
       // concreteness, then we know that it must be symbolic since we ended up
       // in the slow path. Therefore, we can skip expression generation in
       // that case.
-      bool needRuntimeCheck = originalArgExpression != nullExpression;
-      if (needRuntimeCheck && (numUnknownConcreteness == 1))
-        continue;
+      bool needRuntimeCheck = true;
 
       if (needRuntimeCheck) {
         auto *argExpressionBlock = SplitBlockAndInsertIfThen(
@@ -440,7 +435,8 @@ void Symbolizer::visitSelectInst(SelectInst &I) {
   auto runtimeCall = buildRuntimeCall(IRB, runtime.pushPathConstraint,
                                       {{I.getCondition(), true},
                                        {I.getCondition(), false},
-                                       {getTargetPreferredInt(&I), false}});
+                                       {getTargetPreferredInt(&I), false},
+                                       {ConstantInt::get(intPtrType, 0), false}});
   registerSymbolicComputation(runtimeCall);
   if (getSymbolicExpression(I.getTrueValue()) ||
       getSymbolicExpression(I.getFalseValue())) {
@@ -487,10 +483,16 @@ void Symbolizer::visitBranchInst(BranchInst &I) {
     return;
 
   IRBuilder<> IRB(&I);
+  int real_branch = 1;
+  if (getenv("SYMCC_NOT_APPLICATION") && getenv("SYMCC_NOT_APPLICATION")[0] == '1') {
+    real_branch = 0;
+  }
+
   auto runtimeCall = buildRuntimeCall(IRB, runtime.pushPathConstraint,
                                       {{I.getCondition(), true},
                                        {I.getCondition(), false},
-                                       {getTargetPreferredInt(&I), false}});
+                                       {getTargetPreferredInt(&I), false},
+                                       {ConstantInt::get(intPtrType, real_branch), false}});
   registerSymbolicComputation(runtimeCall);
 }
 
@@ -921,7 +923,7 @@ void Symbolizer::visitSwitchInst(SwitchInst &I) {
         runtime.comparisonHandlers[CmpInst::ICMP_EQ],
         {conditionExpr, createValueExpression(caseHandle.getCaseValue(), IRB)});
     IRB.CreateCall(runtime.pushPathConstraint,
-                   {caseConstraint, caseTaken, getTargetPreferredInt(&I)});
+                   {caseConstraint, caseTaken, getTargetPreferredInt(&I), ConstantInt::get(intPtrType, 0)});
   }
 }
 
@@ -1093,7 +1095,7 @@ void Symbolizer::tryAlternative(IRBuilder<> &IRB, Value *V) {
                        {destExpr, concreteDestExpr});
     auto *pushAssertion = IRB.CreateCall(
         runtime.pushPathConstraint,
-        {destAssertion, IRB.getInt1(true), getTargetPreferredInt(V)});
+        {destAssertion, IRB.getInt1(true), getTargetPreferredInt(V), ConstantInt::get(intPtrType, 0)});
     registerSymbolicComputation(SymbolicComputation(
         concreteDestExpr, pushAssertion, {Input(V, 0, destAssertion)}));
   }

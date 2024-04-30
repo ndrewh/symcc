@@ -169,12 +169,6 @@ void _sym_initialize(void) {
   loadConfig();
   initLibcWrappers();
   std::cerr << "This is SymCC running with the QSYM backend" << std::endl;
-  if (std::holds_alternative<NoInput>(g_config.input)) {
-    std::cerr
-        << "Performing fully concrete execution (i.e., without symbolic input)"
-        << std::endl;
-    return;
-  }
 
   // Check the output directory
   if (!fs::exists(g_config.outputDir) ||
@@ -188,8 +182,16 @@ void _sym_initialize(void) {
   g_z3_context = new z3::context{};
   g_enhanced_solver = new EnhancedQsymSolver{};
   g_solver = g_enhanced_solver; // for QSYM-internal use
+
   g_expr_builder = g_config.pruning ? PruneExprBuilder::create()
                                     : SymbolicExprBuilder::create();
+
+  if (std::holds_alternative<NoInput>(g_config.input)) {
+    std::cerr
+        << "Performing fully concrete execution (i.e., without symbolic input)"
+        << std::endl;
+    g_solver->enabled = false;
+  }
 }
 
 SymExpr _sym_build_integer(uint64_t value, uint8_t bits) {
@@ -311,11 +313,11 @@ SymExpr _sym_build_trunc(SymExpr expr, uint8_t bits) {
 }
 
 void _sym_push_path_constraint(SymExpr constraint, int taken,
-                               uintptr_t site_id) {
-  if (constraint == nullptr)
-    return;
+                               uintptr_t site_id, int real_branch) {
+  // if (constraint == nullptr)
+  //   return;
 
-  g_solver->addJcc(allocatedExpressions.at(constraint), taken != 0, site_id);
+  g_solver->addJcc(allocatedExpressions.at(constraint), taken != 0, site_id, real_branch != 0);
 }
 
 SymExpr _sym_get_input_byte(size_t offset, uint8_t value) {

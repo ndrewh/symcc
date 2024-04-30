@@ -197,6 +197,7 @@ bool instrumentFunction(Function &F) {
     symbolizer.visit(instPtr);
 
   symbolizer.finalizePHINodes();
+
   symbolizer.shortCircuitExpressionUses();
 
   // DEBUG(errs() << F << '\n');

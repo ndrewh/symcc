@@ -124,7 +124,7 @@ class EnhancedQsymSolver : public qsym::Solver {
 
 public:
   EnhancedQsymSolver()
-      : qsym::Solver("/dev/null", g_config.outputDir, g_config.aflCoverageMap) {
+      : qsym::Solver("/dev/null", g_config.outputDir, g_config.aflCoverageMap, g_config.solverTimeout) {
   }
 
   void pushInputByte(size_t offset, uint8_t value) {

@@ -92,4 +92,16 @@ void loadConfig() {
       throw std::runtime_error(msg.str());
     }
   }
+
+  auto *solver_timeout = getenv("SYMCC_SOLVER_TIMEOUT_MS");
+  if (solver_timeout != nullptr) {
+    try {
+      g_config.solverTimeout =
+          std::stoul(solver_timeout);
+    } catch (std::invalid_argument &) {
+      std::stringstream msg;
+      msg << "Can't convert " << solver_timeout << " to an integer";
+      throw std::runtime_error(msg.str());
+    }
+  }
 }

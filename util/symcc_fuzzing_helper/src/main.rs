@@ -63,6 +63,14 @@ struct CLI {
     /// nthreads
     #[clap(default_value_t = 1, long = "nthread")]
     nthread: usize,
+
+    /// Timeout for the runner (sec)
+    #[clap(long = "runner_timeout")]
+    runner_timeout: usize,
+
+    /// Timeout for the solver (sec)
+    #[clap(long = "solver_timeout")]
+    solver_timeout: usize,
 }
 
 /// Execution statistics.
@@ -313,7 +321,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let symcc = Arc::new(SymCC::new(symcc_dir.clone(), &options.command));
+    let symcc = Arc::new(SymCC::new(symcc_dir.clone(), &options.command, options.runner_timeout, options.solver_timeout));
     log::debug!("SymCC configuration: {:?}", &symcc);
     let afl_config = Arc::new(AflConfig::load(options.output_dir.join(&options.fuzzer_name), if options.showmap_uses_same_cmdline_as_sym { Some(&options.command) } else { None }).await?);
     log::debug!("AFL configuration: {:?}", &afl_config);

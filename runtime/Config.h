@@ -66,6 +66,7 @@ struct Config {
   /// 2GB on most workloads because requiring that amount of memory per core
   /// participating in the analysis seems reasonable.
   size_t garbageCollectionThreshold = 5'000'000;
+  unsigned solverTimeout = 10000; // ms
 };
 
 /// The global configuration object.

@@ -29,8 +29,6 @@ use std::time::{Duration, Instant};
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
 
-const TIMEOUT: u32 = 90 * 2; // sec
-
 /// Replace the first '@@' in the given command line with the input file.
 fn insert_input_file<S: AsRef<OsStr>, P: AsRef<Path>>(
     command: &[S],
@@ -422,6 +420,12 @@ pub struct SymCC {
 
     /// The command to run.
     command: Vec<OsString>,
+
+    /// Timeout for the runner (sec)
+    runner_timeout: usize,
+
+    /// Timeout for the solver (sec)
+    solver_timeout: usize,
 }
 
 /// The result of executing SymCC.
@@ -438,7 +442,7 @@ pub struct SymCCResult {
 
 impl SymCC {
     /// Create a new SymCC configuration.
-    pub fn new(output_dir: PathBuf, command: &[String]) -> Self {
+    pub fn new(output_dir: PathBuf, command: &[String], runner_timeout: usize, solver_timeout: usize) -> Self {
         let input_file = output_dir.join(".cur_input");
 
         SymCC {
@@ -446,6 +450,8 @@ impl SymCC {
             bitmap: output_dir.join("bitmap"),
             command: insert_input_file(command, &input_file),
             input_file,
+            runner_timeout,
+            solver_timeout
         }
     }
 
@@ -498,12 +504,14 @@ impl SymCC {
         })?;
 
         let mut analysis_command = Command::new("timeout");
+        let solver_timeout_ms = self.solver_timeout * 1000;
         analysis_command
-            .args(&["-k", "5", &TIMEOUT.to_string()])
+            .args(&["-k", "5", &self.runner_timeout.to_string()])
             .args(&self.command)
             .env("SYMCC_ENABLE_LINEARIZATION", "1")
             .env("SYMCC_AFL_COVERAGE_MAP", &self.bitmap)
             .env("SYMCC_OUTPUT_DIR", output_dir.as_ref())
+            .env("SYMCC_SOLVER_TIMEOUT_MS", &solver_timeout_ms.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::piped()); // capture SMT logs
 
